@@ -1,0 +1,84 @@
+--- Predictive modeling ---
+
+- when your model takes input features (e.g., years of experience, education, skills, reviews) 
+- and predicts an outcome (e.g., salary, churn, risk score, job title, etc.).
+
+--- Types ---
+
+Classification → Predict categories
+(e.g. "Is this email spam or not?")
+
+Regression → Predict numbers
+(e.g. "What’s the likely house price?")
+
+--- Algorithms ---
+
+You give a computer a question like: "Can you guess this person's salary/job title/churn risk based on their resume?"
+
+The computer:
+1. Looks at a bunch of examples (e.g. resumes where the salary is known)
+2. Learns the patterns in those examples
+3. Uses those patterns to guess the answers for new, unseen resumes
+
+The tool (Scikit-learn, XGBoost, etc.) is what helps you:
+1. Learn from data
+2. Make predictions
+3. Evaluate how good those predictions are
+
+--- Tools ---
+
+1. Scikit-learn
+
+It gives you everything you need to:
+- Load data (CSV, Excel, etc.)
+- Clean & prepare features (like turning words into numbers)
+- Train basic models: logistic regression, decision trees, k-NN, etc.
+- Test how accurate the model is
+
+You’d use Scikit-learn when:
+- You have data in tables (rows and columns)
+- You want to build something like:
+- “Will this loan default?”
+- “What is the expected salary?”
+- “Is this spam or not?”
+
+It’s fast, simple, and does most jobs really well.
+
+2. XGBoost / LightGBM
+
+They use an advanced technique called gradient boosting — but here’s what that means in real terms:
+- They don’t just learn once.
+- They build a bunch of small, simple models one after the other, each one correcting the mistakes of the last.
+- This makes the final model much more accurate (but a bit harder to interpret).
+
+You’d use XGBoost or LightGBM when:
+- You want high accuracy
+- Your data is still tabular (not images or video)
+
+You’re solving:
+- “Who is likely to leave the company?”
+- “Which customers will buy again?”
+- “What house price should we expect?”
+
+3. TensorFlow (Google's) / PyTorch (Meta's)
+
+They’re not built for everyday predictive tasks like “What’s this person’s salary?”
+
+Instead, they’re best for:
+- Image recognition (e.g., “Is this a cat or dog?”)
+- Voice recognition
+- Text generation and large-scale NLP
+- LLMs, transformers, neural networks
+
+They let you build custom deep learning models from scratch:
+- You define how each layer of the model works
+- You control the training process
+
+You’d use them when:
+- You’re working with images, audio, or complex language models
+- You want full control of a neural network
+
+You’re doing something like:
+- “Classify X-rays”
+- “Generate legal text”
+- “Fine-tune GPT-style models”
