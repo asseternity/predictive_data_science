@@ -170,7 +170,6 @@ import pandas as pd
 
 df = pd.DataFrame(all_games)
 
-
 # Convert dates
 df["date"] = pd.to_datetime(df["date"])
 df["release_date"] = pd.to_datetime(df["release_date"], errors="coerce")
@@ -182,10 +181,40 @@ df["creator"] = df["creator"].str.strip()
 # Drop exact duplicates (some look like they are duplicated reviews)
 df = df.drop_duplicates(subset=["title", "ign_score", "date"])
 
-top_games = df.sort_values("ign_score", ascending=False).head(10)
-print(top_games[["title", "ign_score", "date"]])
+# Average score by developer (and how many games)
+avg_by_dev_plus_count = df.groupby("creator")["ign_score"].agg(["mean", "count"]).sort_values(by="mean", ascending=False)
+print(avg_by_dev_plus_count)
 
-print(df["creator"].value_counts().head(10))
-print(df["author"].value_counts().head(10))
+# Average score by author (and how many games)
+avg_by_author_plus_count = df.groupby("author")["ign_score"].agg(["mean", "count"]).sort_values(by="mean", ascending=False)
+print(avg_by_author_plus_count)
+
+# Average score by year
+# Extract year as a new column (integer)
+df["year"] = df["release_date"].dt.year
+# Now group by year and get average score per year
+avg_by_year = df.groupby("year")["ign_score"].mean().sort_index()
+print(avg_by_year)
 
 # ------ 5. Combine → Train ML with XGBoost ------ 
+
+# A. Prepare the data
+# 1) make sure data is clean, replace unknown rows with a default "unknown"
+# 2) replace date strings with just a year
+# 3) assign each developer and author an ID using LabelEncoder
+# 4) Platforms → since a game can be on multiple platforms, 
+# make one column per platform: PC, PS5, Xbox, etc., and mark 1 if it’s on that platform.
+# use pandas' get_dummies
+# 5) Title --- string, so that's harder
+# Let's congregate title into just title's length in characters
+
+# B. Split into training data vs test data. Train on 80% of data. Test on remaining 20%.
+# Use sklearn.model_selection.train_test_split(df, test_size=0.2, random_state=42) so that results are reproducible.
+
+# C. Choose a model: 
+# Linear Regression: tries to draw a straight-line relationship between your inputs (year, developer, etc.) and the score.
+# Decision Tree: splits the data based on rules like “if developer = X, go left; else go right.”
+
+# D. Train the model
+# E. See how well it does by running it on the test set (compare its prediction vs the real scores)
+# F. Improve gradually. If the error is too big: Add better features, Try a stronger model or Tune settings
