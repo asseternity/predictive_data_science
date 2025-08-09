@@ -170,15 +170,18 @@ import pandas as pd
 
 df = pd.DataFrame(all_games)
 
-# Convert dates
+# Convert the "date" column to datetime objects (makes date operations easier)
 df["date"] = pd.to_datetime(df["date"])
+
+# Convert "release_date" column to datetime too, but if conversion fails, set as NaT (missing datetime)
 df["release_date"] = pd.to_datetime(df["release_date"], errors="coerce")
 
 # Strip whitespace from strings
 df["platform"] = df["platform"].str.strip()
 df["creator"] = df["creator"].str.strip()
 
-# Drop exact duplicates (some look like they are duplicated reviews)
+# Remove duplicate rows where "title", "ign_score", and "date" columns are exactly the same
+# Keeps the first occurrence, drops the rest
 df = df.drop_duplicates(subset=["title", "ign_score", "date"])
 
 # Average score by developer (and how many games)
@@ -190,11 +193,29 @@ avg_by_author_plus_count = df.groupby("author")["ign_score"].agg(["mean", "count
 print(avg_by_author_plus_count)
 
 # Average score by year
-# Extract year as a new column (integer)
+# Extract the year from the "release_date" datetime column into a new integer column "year"
 df["year"] = df["release_date"].dt.year
-# Now group by year and get average score per year
+# Group by the new "year" column, calculate the average "ign_score" for each year, and sort the results by year (chronological order)
 avg_by_year = df.groupby("year")["ign_score"].mean().sort_index()
 print(avg_by_year)
+
+# *WHY THE ABOVE WORKS*
+# 1) You start with df, your full DataFrame — a big table containing all the data.
+
+# 2) When you do df.groupby("creator"), pandas splits this big table into smaller tables, one for each unique creator. 
+# This returns a GroupBy object — a kind of lazy object that hasn't done calculations yet.
+
+# 3) Adding ["ign_score"] selects only the "ign_score" column from each smaller table, 
+# turning those tables into single-column groups (Series).
+
+# 4) Calling .agg(["mean", "count"]) tells pandas to calculate the average and the count of the scores inside each smaller group.
+
+# 5) Then the .groupby-.agg chain is complete: pandas combines the results from all these smaller tables back into one new table, 
+# where each row shows a creator’s average score and how many scores they have.
+
+# 6) .agg() behaves differently:
+# .agg() on a regular DataFrame (without .groupby()) calculates summary stats like mean or count for each column in the entire table.
+# .agg() on a GroupBy object calculates those stats inside each smaller table (each creator’s data separately).
 
 # ------ 5. Combine → Train ML with XGBoost ------ 
 
