@@ -171,18 +171,45 @@ import pandas as pd
 df = pd.DataFrame(all_games)
 
 # Convert the "date" column to datetime objects (makes date operations easier)
-df["date"] = pd.to_datetime(df["date"])
+# Errors='coerce' will turn anything non-numeric (like "N/A" or "Unknown") into NaN.
+df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
 # Convert "release_date" column to datetime too, but if conversion fails, set as NaT (missing datetime)
 df["release_date"] = pd.to_datetime(df["release_date"], errors="coerce")
+
+# Add a year column, which just holds the year of release as an integer
+df["year"] = df["date"].dt.year
 
 # Strip whitespace from strings
 df["platform"] = df["platform"].str.strip()
 df["creator"] = df["creator"].str.strip()
 
-# Remove duplicate rows where "title", "ign_score", and "date" columns are exactly the same
+# Remove duplicate rows where "title" and "ign_score" columns are exactly the same
 # Keeps the first occurrence, drops the rest
-df = df.drop_duplicates(subset=["title", "ign_score", "date"])
+df = df.drop_duplicates(subset=["title", "ign_score"])
+
+# Fill missing values with "unknown", note: only do this for string data
+df["creator"] = df["creator"].fillna("Unknown")
+df["platform"] = df["platform"].fillna("Unknown")
+df["author"] = df["author"].fillna("Unknown")
+df["title"] = df["title"].fillna("Unknown")
+
+# Errors='coerce' will turn anything non-numeric (like "N/A" or "Unknown") into NaN.
+df["ign_score"] = pd.to_numeric(df["ign_score"], errors='coerce')
+
+# Standardize column names and data (lowercase and replace spaces with underscores), note: only do this for string data
+df.columns = df.columns.str.lower().str.replace(' ', '_')
+df['platform'] = df['platform'].str.lower().str.replace(' ', '_')
+df["creator"] = df["creator"].str.lower().str.replace(' ', '_')
+df["author"] = df["author"].str.lower().str.replace(' ', '_')
+df["title"] = df["title"].str.lower().str.replace(' ', '_')
+df["link"] = df["link"].str.lower().str.replace(' ', '_')
+
+# Drop NaN rows (works for non-string data)
+df = df.dropna(subset=["ign_score", "date"])
+
+# Remove the link column
+df = df.drop(columns=["link"])
 
 # Average score by developer (and how many games)
 avg_by_dev_plus_count = df.groupby("creator")["ign_score"].agg(["mean", "count"]).sort_values(by="mean", ascending=False)
@@ -193,13 +220,13 @@ avg_by_author_plus_count = df.groupby("author")["ign_score"].agg(["mean", "count
 print(avg_by_author_plus_count)
 
 # Average score by year
-# Extract the year from the "release_date" datetime column into a new integer column "year"
-df["year"] = df["release_date"].dt.year
 # Group by the new "year" column, calculate the average "ign_score" for each year, and sort the results by year (chronological order)
 avg_by_year = df.groupby("year")["ign_score"].mean().sort_index()
 print(avg_by_year)
 
-# *WHY THE ABOVE WORKS*
+##########################################################
+
+# ------ WHY THE ABOVE WORKS ------
 # 1) You start with df, your full DataFrame — a big table containing all the data.
 
 # 2) When you do df.groupby("creator"), pandas splits this big table into smaller tables, one for each unique creator. 
@@ -217,25 +244,48 @@ print(avg_by_year)
 # .agg() on a regular DataFrame (without .groupby()) calculates summary stats like mean or count for each column in the entire table.
 # .agg() on a GroupBy object calculates those stats inside each smaller table (each creator’s data separately).
 
-# ------ 5. Combine → Train ML with XGBoost ------ 
+# CONCLUSION: Data Science is about LOGIC, PATH, and STRATEGIZING over OTHER DEVELOPMENT'S "GETTING IT DONE".
 
-# A. Prepare the data
-# 1) make sure data is clean, replace unknown rows with a default "unknown"
-# 2) replace date strings with just a year
-# 3) assign each developer and author an ID using LabelEncoder
-# 4) Platforms → since a game can be on multiple platforms, 
-# make one column per platform: PC, PS5, Xbox, etc., and mark 1 if it’s on that platform.
-# use pandas' get_dummies
-# 5) Title --- string, so that's harder
-# Let's congregate title into just title's length in characters
+##########################################################
+
+# ------ 5. Combine → Train ML with XGBoost ------ 
+# A. Assign each developer and author an ID using LabelEncoder
+from sklearn.preprocessing import LabelEncoder
+
+# Encode developers (creators)
+creator_encoder = LabelEncoder()
+df['creator_id'] = creator_encoder.fit_transform(df['creator'])
+
+# Encode authors
+author_encoder = LabelEncoder()
+df['author_id'] = author_encoder.fit_transform(df['author'])
+
+# B. For platforms (since a game can be on multiple platforms) 
+# - make one column per platform: PC, PS5, Xbox, etc., and mark 1 if it’s on that platform.
+# - use pandas' get_dummies
+df["platform"] = df["platform"].str.split(", ") # Split each platform row's data from a string into lists
+df = df.join(df["platform"].str.join('|').str.get_dummies()) # One-hot encode into multiple columns
+
+# C. Start doing sample ML
+# - split into training data (80%) and testing data (20%)
+# - choose a model: 
+# Linear Regression: tries to draw a straight-line relationship between your inputs (year, developer, etc.) and the score.
+# Decision Tree: splits the data based on rules like “if developer = X, go left; else go right.”
+# - train the model
+# - see how well it does by running it on the test set (compare its prediction vs the real scores)
+# - improve gradually. If the error is too big: Add better features, Try a stronger model or Tune settings
+
+import numpy as np
+from xgboost import XGBRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+
+
+
+# ------ 6. Add Features ------ 
+# A. Title --- string, so that's harder
+# - Let's congregate title into just title's length in characters
+# - Then do thinks like "does it have a colon in the name" and "one word or more"
 
 # B. Split into training data vs test data. Train on 80% of data. Test on remaining 20%.
 # Use sklearn.model_selection.train_test_split(df, test_size=0.2, random_state=42) so that results are reproducible.
-
-# C. Choose a model: 
-# Linear Regression: tries to draw a straight-line relationship between your inputs (year, developer, etc.) and the score.
-# Decision Tree: splits the data based on rules like “if developer = X, go left; else go right.”
-
-# D. Train the model
-# E. See how well it does by running it on the test set (compare its prediction vs the real scores)
-# F. Improve gradually. If the error is too big: Add better features, Try a stronger model or Tune settings
