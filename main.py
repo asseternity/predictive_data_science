@@ -178,7 +178,7 @@ df["date"] = pd.to_datetime(df["date"], errors="coerce")
 df["release_date"] = pd.to_datetime(df["release_date"], errors="coerce")
 
 # Add a year column, which just holds the year of release as an integer
-df["year"] = df["date"].dt.year
+df["year"] = df["release_date"].dt.year
 
 # Strip whitespace from strings
 df["platform"] = df["platform"].str.strip()
@@ -308,12 +308,14 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 # alternative to the above: “predict future from past” setup - split by year instead of random
 
-# baseline = very simple reference model (like predicting the median) used 
+# [_] baseline = very simple reference model (like predicting the median) used 
 # to check whether your real model is actually learning something useful. 
 # If you can’t beat the baseline, revisit data cleaning or feature choices
 
 # Models: “Classifier” predicts categories; “regressor” predicts a number 
-# Here, we train XGBoost "regressor"
+# [_] Here, we train XGBoost "regressor"
+
+# [_] learn what these are = Metrics: MAE, RMSE, R² on a held-out test.
 
 # ------ 6. Add Features ------ 
 # A. Title --- string, so that's harder
