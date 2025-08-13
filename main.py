@@ -199,7 +199,7 @@ df["ign_score"] = pd.to_numeric(df["ign_score"], errors='coerce')
 
 # Standardize column names and data (lowercase and replace spaces with underscores), note: only do this for string data
 df.columns = df.columns.str.lower().str.replace(' ', '_')
-df['platform'] = df['platform'].str.lower().str.replace(' ', '_')
+# df['platform'] = df['platform'].str.lower().str.replace(' ', '_') --- do not do this, we will need to separate the strings later
 df["creator"] = df["creator"].str.lower().str.replace(' ', '_')
 df["author"] = df["author"].str.lower().str.replace(' ', '_')
 df["title"] = df["title"].str.lower().str.replace(' ', '_')
@@ -266,26 +266,56 @@ df['author_id'] = author_encoder.fit_transform(df['author'])
 df["platform"] = df["platform"].str.split(", ") # Split each platform row's data from a string into lists
 df = df.join(df["platform"].str.join('|').str.get_dummies()) # One-hot encode into multiple columns
 
-# C. Start doing sample ML
-# - split into training data (80%) and testing data (20%)
-# - choose a model: 
-# Linear Regression: tries to draw a straight-line relationship between your inputs (year, developer, etc.) and the score.
-# Decision Tree: splits the data based on rules like “if developer = X, go left; else go right.”
-# - train the model
-# - see how well it does by running it on the test set (compare its prediction vs the real scores)
-# - improve gradually. If the error is too big: Add better features, Try a stronger model or Tune settings
-
+# ------ 6. Start doing sample ML ------  
 import numpy as np
+from sklearn.model_selection import train_test_split, KFold, cross_val_score
+from sklearn.dummy import DummyRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
 
+# GOAL: predict ign_score given a year, a developer, a writer and a list of platforms
 
+# y = target we want ML to predict
+y = df["ign_score"]
+
+# features = input variables the model uses to make a prediction
+# print([c for c in df.columns]) --- list the columns to find specific ones
+base_feature_columns = ["creator_id", "author_id", "year"]
+platform_columns = ['Google Stadia', 'Google Stadia ', 'Nintendo 3DS', 'Nintendo 3DS ', 'Nintendo Switch', 'Nintendo Switch ', 'PC', 'PC ', 'PlayStation 4', 'PlayStation 4 ', 'PlayStation 5', 'PlayStation 5 ', 'PlayStation VR', 'PlayStation Vita ', 'Wii U', 'Wii U ', 'Xbox One', 'Xbox One ', 'Xbox Series X/S', 'Xbox Series X/S ']
+feature_columns = base_feature_columns + platform_columns
+X = df[feature_columns]
+
+# Drop rows with any missing features or missing target
+mask_no_nans_in_X = X.notna().all(axis=1) # .all(axis=1) → all means it collapses rows into a single True if NO NaNs at all, False if at least 1
+mask_no_nans_in_y = y.notna() # .notna() → returns a DF of True where the cell is not missing (NaN) and False where it is missing.
+mask = mask_no_nans_in_X & mask_no_nans_in_y
+X = X[mask]
+y = y[mask]
+
+# Ensure all features are numeric
+X = X.astype(float)
+
+# Create a test / train split syntax:
+RANDOM_STATE = 42 # random integer
+np.random.seed(RANDOM_STATE) # reproducibility: sets NumPy’s random number gen to start in the same state to get same sequence each time
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=RANDOM_STATE,
+    shuffle=True
+)
+# alternative to the above: “predict future from past” setup - split by year instead of random
+
+# baseline = very simple reference model (like predicting the median) used 
+# to check whether your real model is actually learning something useful. 
+# If you can’t beat the baseline, revisit data cleaning or feature choices
+
+# Models: “Classifier” predicts categories; “regressor” predicts a number 
+# Here, we train XGBoost "regressor"
 
 # ------ 6. Add Features ------ 
 # A. Title --- string, so that's harder
 # - Let's congregate title into just title's length in characters
 # - Then do thinks like "does it have a colon in the name" and "one word or more"
-
-# B. Split into training data vs test data. Train on 80% of data. Test on remaining 20%.
-# Use sklearn.model_selection.train_test_split(df, test_size=0.2, random_state=42) so that results are reproducible.
