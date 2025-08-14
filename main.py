@@ -99,8 +99,8 @@ else:
             title = title_el.get_text(strip=True) if title_el else None
         
             # Link
-            link_element = soup.find('a', href=re.compile(r'^/game/\d+/'))
-            link = f"https://opencritic.com/{link_element['href']}" if link_element else None
+            link_element = block.find('a', href=re.compile(r'^/game/\d+/'))
+            link = f"https://opencritic.com{link_element['href']}" if link_element else None
 
             all_games.append({
                 "title": title,
@@ -260,14 +260,23 @@ print(avg_by_year)
 
 ##########################################################
 
-# ------ 5. Add title-based clues ------ 
+# ------ 5. Add clues ------ 
 # title-based clues (you lowercased already)
 t = df["title"].fillna("")
 df["has_colon"] = t.str.contains(":")
 df["has_num"]   = t.str.contains(r"\b(\d+|ii|iii|iv|v|vi|vii|viii|ix|x)\b")
 df["is_dlc"]    = t.str.contains(r"\b(dlc|expansion|episode|chapter|pack|remaster|definitive)\b")
 
-# ------ 6. Combine → Train ML with XGBoost ------ 
+# review timing vs release
+df["review_lag_days"] = (df["date"] - df["release_date"]).dt.days
+
+# how many platforms (proxy for budget/reach)
+df["platform_count"] = df["platform"].apply(lambda lst: len(lst) if isinstance(lst, list) else 0)
+
+# (optional) title length
+df["title_len"] = df["title"].fillna("").str.len()
+
+# ------ 6. Prepare developer, author and platform columns ------ 
 # A. Assign each developer and author an ID using LabelEncoder
 from sklearn.preprocessing import LabelEncoder
 
@@ -298,11 +307,14 @@ df["platform"] = df["platform"].apply(strip_row_whitespaces)
 # One-hot encode into separate columns
 df = df.join(df["platform"].str.join('|').str.get_dummies())
 
-# ------ 6. Start doing sample ML ------  
+# ------ 7. Start doing sample ML ------  
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.dummy import DummyRegressor
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import make_pipeline
 from xgboost import XGBRegressor
 
 # GOAL: predict ign_score given a year, a developer, a writer and a list of platforms
@@ -311,26 +323,30 @@ from xgboost import XGBRegressor
 y = df["ign_score"]
 
 # features = input variables the model uses to make a prediction
-print([c for c in df.columns]) # list the columns to find specific ones
-base_feature_columns = ["creator_id", "author_id", "year", "has_colon", "has_num", "is_dlc"]
-platform_columns = ['Google Stadia', 'Nintendo 3DS', 'Nintendo Switch', 'PC', 'PlayStation 4', 'PlayStation 5', 'PlayStation VR', 'PlayStation Vita', 'Wii U', 'Xbox One', 'Xbox Series X/S']
-feature_columns = base_feature_columns + platform_columns
-X = df[feature_columns]
+# print([c for c in df.columns]) # list the columns to find specific ones
+categorical = ["creator", "author"]
+numeric = [
+    "year","has_colon","has_num","is_dlc",
+    "review_lag_days","platform_count","title_len",
+    "Google Stadia","Nintendo 3DS","Nintendo Switch","PC",
+    "PlayStation 4","PlayStation 5","PlayStation VR","PlayStation Vita",
+    "Wii U","Xbox One","Xbox Series X/S"
+]
+X = df[categorical + numeric]
 
 # Drop rows with any missing features or missing target
-mask_no_nans_in_X = X.notna().all(axis=1) # .all(axis=1) → all means it collapses rows into a single True if NO NaNs at all, False if at least 1
-mask_no_nans_in_y = y.notna() # .notna() → returns a DF of True where the cell is not missing (NaN) and False where it is missing.
-mask = mask_no_nans_in_X & mask_no_nans_in_y
-X = X[mask]
-y = y[mask]
+# .all(axis=1) → all means it collapses rows into a single True if NO NaNs at all, False if at least 1
+# .notna() → returns a DF of True where the cell is not missing (NaN) and False where it is missing.
+valid = df[categorical + numeric + ["ign_score"]].notna().all(axis=1)
+X = df.loc[valid, categorical + numeric].copy()
+y = df.loc[valid, "ign_score"].copy()
 
-# Ensure all features are numeric
-X = X.astype(float)
+# Ensure only numeric features are numeric; leave strings for OneHotEncoder
+X[numeric] = X[numeric].astype(float)
 
 # Create a test / train split syntax:
 RANDOM_STATE = 42 # random integer
 np.random.seed(RANDOM_STATE) # reproducibility: sets NumPy’s random number gen to start in the same state to get same sequence each time
-
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
@@ -358,49 +374,49 @@ baseline_model = DummyRegressor(strategy="median")
 baseline_model.fit(X_train, y_train)
 baseline_predictions = baseline_model.predict(X_test)
 
-# # Models: “Classifier” predicts categories; “Regressor” predicts a number 
-# # Here, we make, fit (train) XGBoost "regressor" and make it predict
+# Models: “Classifier” predicts categories; “Regressor” predicts a number 
+# Here, we make, fit (train) XGBoost "regressor" and make it predict
 our_model = XGBRegressor(random_state=RANDOM_STATE)
-our_model.fit(X_train, y_train)
-our_model_predictions = our_model.predict(X_test)
+pre = ColumnTransformer([ ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=5), categorical), ("num", "passthrough", numeric) ])
+pipe = make_pipeline(pre, our_model)
+pipe.fit(X_train, y_train)
+our_predictions = pipe.predict(X_test)
 
 # # Compare baseline and real model with MAE, RMSE and R^2
 mae_baseline = mean_absolute_error(y_test, baseline_predictions)
-mae_our_model = mean_absolute_error(y_test, our_model_predictions)
+mae_ours = mean_absolute_error(y_test, our_predictions)
 rmse_baseline = root_mean_squared_error(y_test, baseline_predictions)
-rmse_our_model = root_mean_squared_error(y_test, our_model_predictions)
-r2_our_model = r2_score(y_test, our_model_predictions)
+rmse_ours = root_mean_squared_error(y_test, our_predictions)
+r2_ours = r2_score(y_test, our_predictions)
 
 print("Baseline MAE:", mae_baseline)
-print("Model MAE:", mae_our_model)
+print("Model MAE:", mae_ours)
 print("Baseline RMSE:", rmse_baseline)
-print("Model RMSE:", rmse_our_model)
-print("Model R²:", r2_our_model)
+print("Model RMSE:", rmse_ours)
+print("Model R²:", r2_ours)
 
 # Ask it to make a prediction
 # Find ids
 print(list(enumerate(creator_encoder.classes_)))
 print(list(enumerate(author_encoder.classes_)))
 # Pretend you want to predict for this game
-# Create a blank row with all features set to 0
-new_game = pd.DataFrame([{col: 0 for col in feature_columns}])
-# Now fill in desired values
-new_game["creator_id"] = 56 # obsidian
-new_game["author_id"] = 110 # luke reilly
-new_game["year"] = 2025
-new_game["has_colon"] = True
-new_game["has_num"] = False
-new_game["is_dlc"] = False
-new_game["PC"] = 1
-predicted_score = our_model.predict(new_game)
+new_game = pd.DataFrame([{
+    "creator": "obsidian_entertainment",
+    "author":  "luke_reilly",
+    "year": 2025,
+    "review_lag_days": 30,
+    "title_len": 5,
+    "platform_count": 1,
+    "has_colon": True, "has_num": False, "is_dlc": False,
+    "Google Stadia": 0, "Nintendo 3DS": 0, "Nintendo Switch": 1, "PC": 0,
+    "PlayStation 4": 0, "PlayStation 5": 0, "PlayStation VR": 0, "PlayStation Vita": 0,
+    "Wii U": 0, "Xbox One": 0, "Xbox Series X/S": 0
+}])
+predicted_score = pipe.predict(new_game)
 print("Predicted IGN score:", predicted_score[0])
 
-# ------ 7. Add Features ------ 
+# ------ 8. Add Features ------ 
 # The model with just year of release, developer, writer and platform is not beating the baseline.
 # Reason: IGN review scores mostly live in a tight 6–9 band, a “guess the median” baseline is surprisingly strong.
-# This is where feature engineering comes in: for example, using titles.
-# Titles are a string, so it's harder, but we can:
-# - Let's congregate title into just title's length in characters
-# - Then do thinks like "does it have a colon in the name" and "one word or more"
-
-# LESSON: Before I do a ML project, I have to BELIEVE/THINK that there is a correlation, not just HOPE there is one.
+# Lesson: Before I do a ML project, I have to BELIEVE/THINK that there is a correlation, not just HOPE there is one.
+# Solution: attach metadata to all_games: genre / steam tags, like I planned
