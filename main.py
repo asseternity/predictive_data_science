@@ -260,7 +260,14 @@ print(avg_by_year)
 
 ##########################################################
 
-# ------ 5. Combine → Train ML with XGBoost ------ 
+# ------ 5. Add title-based clues ------ 
+# title-based clues (you lowercased already)
+t = df["title"].fillna("")
+df["has_colon"] = t.str.contains(":")
+df["has_num"]   = t.str.contains(r"\b(\d+|ii|iii|iv|v|vi|vii|viii|ix|x)\b")
+df["is_dlc"]    = t.str.contains(r"\b(dlc|expansion|episode|chapter|pack|remaster|definitive)\b")
+
+# ------ 6. Combine → Train ML with XGBoost ------ 
 # A. Assign each developer and author an ID using LabelEncoder
 from sklearn.preprocessing import LabelEncoder
 
@@ -273,7 +280,6 @@ author_encoder = LabelEncoder()
 df['author_id'] = author_encoder.fit_transform(df['author'])
 
 # B. For platforms (since a game can be on multiple platforms) make one column per platform and mark 1 if it’s on that platform
-
 # Split each platform cell into a list
 df["platform"] = df["platform"].str.split(",")
 
@@ -306,7 +312,7 @@ y = df["ign_score"]
 
 # features = input variables the model uses to make a prediction
 print([c for c in df.columns]) # list the columns to find specific ones
-base_feature_columns = ["creator_id", "author_id", "year"]
+base_feature_columns = ["creator_id", "author_id", "year", "has_colon", "has_num", "is_dlc"]
 platform_columns = ['Google Stadia', 'Nintendo 3DS', 'Nintendo Switch', 'PC', 'PlayStation 4', 'PlayStation 5', 'PlayStation VR', 'PlayStation Vita', 'Wii U', 'Xbox One', 'Xbox Series X/S']
 feature_columns = base_feature_columns + platform_columns
 X = df[feature_columns]
@@ -328,7 +334,7 @@ np.random.seed(RANDOM_STATE) # reproducibility: sets NumPy’s random number gen
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
-    test_size=0.20,
+    test_size=0.10,
     random_state=RANDOM_STATE,
     shuffle=True
 )
@@ -376,29 +382,25 @@ print("Model R²:", r2_our_model)
 print(list(enumerate(creator_encoder.classes_)))
 print(list(enumerate(author_encoder.classes_)))
 # Pretend you want to predict for this game
-new_game = pd.DataFrame([{
-    "creator_id": 56, # obsidian
-    "author_id": 110, # luke reilly
-    "year": 2025,
-    "Google Stadia": 0,
-    "Nintendo 3DS": 0,
-    "Nintendo Switch": 1,
-    "PC": 1,
-    "PlayStation 4": 1,
-    "PlayStation 5": 1,
-    "PlayStation VR": 0,
-    "PlayStation Vita": 0,
-    "Wii U": 0,
-    "Xbox One": 1,
-    "Xbox Series X/S": 1
-}])
-
+# Create a blank row with all features set to 0
+new_game = pd.DataFrame([{col: 0 for col in feature_columns}])
+# Now fill in desired values
+new_game["creator_id"] = 56 # obsidian
+new_game["author_id"] = 110 # luke reilly
+new_game["year"] = 2025
+new_game["has_colon"] = True
+new_game["has_num"] = False
+new_game["is_dlc"] = False
+new_game["PC"] = 1
 predicted_score = our_model.predict(new_game)
 print("Predicted IGN score:", predicted_score[0])
 
-# ------ 6. Add Features ------ 
+# ------ 7. Add Features ------ 
 # The model with just year of release, developer, writer and platform is not beating the baseline.
+# Reason: IGN review scores mostly live in a tight 6–9 band, a “guess the median” baseline is surprisingly strong.
 # This is where feature engineering comes in: for example, using titles.
 # Titles are a string, so it's harder, but we can:
 # - Let's congregate title into just title's length in characters
 # - Then do thinks like "does it have a colon in the name" and "one word or more"
+
+# LESSON: Before I do a ML project, I have to BELIEVE/THINK that there is a correlation, not just HOPE there is one.
