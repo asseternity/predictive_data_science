@@ -19,6 +19,14 @@ import os
 
 CACHE_PATH = "reviews_cache.json"
 
+def clean_text(s):
+    if pd.isna(s):
+        return s
+    # Lowercase, strip spaces, remove trailing commas/punctuation
+    s = s.lower().strip()
+    s = re.sub(r'[^\w\s&-]', '', s)  # keep letters/numbers/underscore/&/-
+    return s
+
 def load_cache():
     if os.path.exists(CACHE_PATH):
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
@@ -194,6 +202,10 @@ df["platform"] = df["platform"].fillna("Unknown")
 df["author"] = df["author"].fillna("Unknown")
 df["title"] = df["title"].fillna("Unknown")
 
+# run the RegExp text cleaner
+df["creator"] = df["creator"].apply(clean_text)
+df["author"] = df["author"].apply(clean_text)
+
 # Errors='coerce' will turn anything non-numeric (like "N/A" or "Unknown") into NaN.
 df["ign_score"] = pd.to_numeric(df["ign_score"], errors='coerce')
 
@@ -260,17 +272,31 @@ df['creator_id'] = creator_encoder.fit_transform(df['creator'])
 author_encoder = LabelEncoder()
 df['author_id'] = author_encoder.fit_transform(df['author'])
 
-# B. For platforms (since a game can be on multiple platforms) 
-# - make one column per platform: PC, PS5, Xbox, etc., and mark 1 if it’s on that platform.
-# - use pandas' get_dummies
-df["platform"] = df["platform"].str.split(", ") # Split each platform row's data from a string into lists
-df = df.join(df["platform"].str.join('|').str.get_dummies()) # One-hot encode into multiple columns
+# B. For platforms (since a game can be on multiple platforms) make one column per platform and mark 1 if it’s on that platform
+
+# Split each platform cell into a list
+df["platform"] = df["platform"].str.split(",")
+
+# Strip whitespace from each platform in those lists
+# - .apply() = pandas func to take each element of a Series / each row/column of a DataFrame and run it through a function
+# - in our case, we take a column of a DF, so whatever is in () of apply will run through the list of platforms (separated from a string above) 
+# - .apply() takes a FUNC as an argument, but that FUNC must have an argument of its own, and .apply's puts its target into that INNER argument
+def strip_row_whitespaces(row):
+    stripped_row = []
+    for string in row:
+        cleaned_string = string.strip()
+        stripped_row.append(cleaned_string)
+    return stripped_row  
+df["platform"] = df["platform"].apply(strip_row_whitespaces)
+
+# One-hot encode into separate columns
+df = df.join(df["platform"].str.join('|').str.get_dummies())
 
 # ------ 6. Start doing sample ML ------  
 import numpy as np
-from sklearn.model_selection import train_test_split, KFold, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.dummy import DummyRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
 from xgboost import XGBRegressor
 
 # GOAL: predict ign_score given a year, a developer, a writer and a list of platforms
@@ -279,9 +305,9 @@ from xgboost import XGBRegressor
 y = df["ign_score"]
 
 # features = input variables the model uses to make a prediction
-# print([c for c in df.columns]) --- list the columns to find specific ones
+print([c for c in df.columns]) # list the columns to find specific ones
 base_feature_columns = ["creator_id", "author_id", "year"]
-platform_columns = ['Google Stadia', 'Google Stadia ', 'Nintendo 3DS', 'Nintendo 3DS ', 'Nintendo Switch', 'Nintendo Switch ', 'PC', 'PC ', 'PlayStation 4', 'PlayStation 4 ', 'PlayStation 5', 'PlayStation 5 ', 'PlayStation VR', 'PlayStation Vita ', 'Wii U', 'Wii U ', 'Xbox One', 'Xbox One ', 'Xbox Series X/S', 'Xbox Series X/S ']
+platform_columns = ['Google Stadia', 'Nintendo 3DS', 'Nintendo Switch', 'PC', 'PlayStation 4', 'PlayStation 5', 'PlayStation VR', 'PlayStation Vita', 'Wii U', 'Xbox One', 'Xbox Series X/S']
 feature_columns = base_feature_columns + platform_columns
 X = df[feature_columns]
 
@@ -308,16 +334,71 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 # alternative to the above: “predict future from past” setup - split by year instead of random
 
-# [_] baseline = very simple reference model (like predicting the median) used 
+# --------- TERMS --------
+# Fit = train
+# Variation - deviations from the mean (how far each value is from the average)
+# Median - middle value in a sorted list of numbers. less sensitive to extreme values than the average (mean):
+# [6, 7, 8, 9, 100] → median = 8, mean ≈ 26.
+# So: I set aside 20% of the data that the model did NOT see, so that I can programmatically compare the test data with predictions, and get: 
+# - MAE (Mean Absolute Error) - sum of by how off predictions are, divided by total predictions = by how much the predictions are off on average
+# - RMSE (Root Mean Squared Error) - same, but sums are squared, then square rooted - to make big mistakes more punishable
+# Baseline: I grab all features that you give me. For this particular set of features, the mean is this. Dummy of predictions.
+# R^2 = 1− (Our model’s error​ / Baseline’s error), which means how much better are we than that. Like, did we even achieve anything.
+
+# baseline/dummy = very simple reference model (like predicting the median) used 
 # to check whether your real model is actually learning something useful. 
 # If you can’t beat the baseline, revisit data cleaning or feature choices
+baseline_model = DummyRegressor(strategy="median")
+baseline_model.fit(X_train, y_train)
+baseline_predictions = baseline_model.predict(X_test)
 
-# Models: “Classifier” predicts categories; “regressor” predicts a number 
-# [_] Here, we train XGBoost "regressor"
+# # Models: “Classifier” predicts categories; “Regressor” predicts a number 
+# # Here, we make, fit (train) XGBoost "regressor" and make it predict
+our_model = XGBRegressor(random_state=RANDOM_STATE)
+our_model.fit(X_train, y_train)
+our_model_predictions = our_model.predict(X_test)
 
-# [_] learn what these are = Metrics: MAE, RMSE, R² on a held-out test.
+# # Compare baseline and real model with MAE, RMSE and R^2
+mae_baseline = mean_absolute_error(y_test, baseline_predictions)
+mae_our_model = mean_absolute_error(y_test, our_model_predictions)
+rmse_baseline = root_mean_squared_error(y_test, baseline_predictions)
+rmse_our_model = root_mean_squared_error(y_test, our_model_predictions)
+r2_our_model = r2_score(y_test, our_model_predictions)
+
+print("Baseline MAE:", mae_baseline)
+print("Model MAE:", mae_our_model)
+print("Baseline RMSE:", rmse_baseline)
+print("Model RMSE:", rmse_our_model)
+print("Model R²:", r2_our_model)
+
+# Ask it to make a prediction
+# Find ids
+print(list(enumerate(creator_encoder.classes_)))
+print(list(enumerate(author_encoder.classes_)))
+# Pretend you want to predict for this game
+new_game = pd.DataFrame([{
+    "creator_id": 56, # obsidian
+    "author_id": 110, # luke reilly
+    "year": 2025,
+    "Google Stadia": 0,
+    "Nintendo 3DS": 0,
+    "Nintendo Switch": 1,
+    "PC": 1,
+    "PlayStation 4": 1,
+    "PlayStation 5": 1,
+    "PlayStation VR": 0,
+    "PlayStation Vita": 0,
+    "Wii U": 0,
+    "Xbox One": 1,
+    "Xbox Series X/S": 1
+}])
+
+predicted_score = our_model.predict(new_game)
+print("Predicted IGN score:", predicted_score[0])
 
 # ------ 6. Add Features ------ 
-# A. Title --- string, so that's harder
+# The model with just year of release, developer, writer and platform is not beating the baseline.
+# This is where feature engineering comes in: for example, using titles.
+# Titles are a string, so it's harder, but we can:
 # - Let's congregate title into just title's length in characters
 # - Then do thinks like "does it have a colon in the name" and "one word or more"
