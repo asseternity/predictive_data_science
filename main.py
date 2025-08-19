@@ -112,7 +112,6 @@ else:
             print(f"{date} | {author} | {title} | {score}")
 
 # ------ 3. Getting Metadata from OpenCritic Game Pages with Selenium ------
-
 if not cached:
     for game in all_games:
         creator = ""
@@ -260,163 +259,352 @@ print(avg_by_year)
 
 ##########################################################
 
-# ------ 5. Add clues ------ 
-# title-based clues (you lowercased already)
-t = df["title"].fillna("")
-df["has_colon"] = t.str.contains(":")
-df["has_num"]   = t.str.contains(r"\b(\d+|ii|iii|iv|v|vi|vii|viii|ix|x)\b")
-df["is_dlc"]    = t.str.contains(r"\b(dlc|expansion|episode|chapter|pack|remaster|definitive)\b")
-
-# review timing vs release
-df["review_lag_days"] = (df["date"] - df["release_date"]).dt.days
-
-# how many platforms (proxy for budget/reach)
-df["platform_count"] = df["platform"].apply(lambda lst: len(lst) if isinstance(lst, list) else 0)
-
-# (optional) title length
-df["title_len"] = df["title"].fillna("").str.len()
-
-# ------ 6. Prepare developer, author and platform columns ------ 
-# A. Assign each developer and author an ID using LabelEncoder
-from sklearn.preprocessing import LabelEncoder
-
-# Encode developers (creators)
-creator_encoder = LabelEncoder()
-df['creator_id'] = creator_encoder.fit_transform(df['creator'])
-
-# Encode authors
-author_encoder = LabelEncoder()
-df['author_id'] = author_encoder.fit_transform(df['author'])
-
-# B. For platforms (since a game can be on multiple platforms) make one column per platform and mark 1 if it’s on that platform
-# Split each platform cell into a list
-df["platform"] = df["platform"].str.split(",")
-
-# Strip whitespace from each platform in those lists
-# - .apply() = pandas func to take each element of a Series / each row/column of a DataFrame and run it through a function
-# - in our case, we take a column of a DF, so whatever is in () of apply will run through the list of platforms (separated from a string above) 
-# - .apply() takes a FUNC as an argument, but that FUNC must have an argument of its own, and .apply's puts its target into that INNER argument
-def strip_row_whitespaces(row):
-    stripped_row = []
-    for string in row:
-        cleaned_string = string.strip()
-        stripped_row.append(cleaned_string)
-    return stripped_row  
-df["platform"] = df["platform"].apply(strip_row_whitespaces)
-
-# One-hot encode into separate columns
-df = df.join(df["platform"].str.join('|').str.get_dummies())
-
-# ------ 7. Start doing sample ML ------  
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.dummy import DummyRegressor
-from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.pipeline import make_pipeline
-from xgboost import XGBRegressor
-
-# GOAL: predict ign_score given a year, a developer, a writer and a list of platforms
-
-# y = target we want ML to predict
-y = df["ign_score"]
-
-# features = input variables the model uses to make a prediction
-# print([c for c in df.columns]) # list the columns to find specific ones
-categorical = ["creator", "author"]
-numeric = [
-    "year","has_colon","has_num","is_dlc",
-    "review_lag_days","platform_count","title_len",
-    "Google Stadia","Nintendo 3DS","Nintendo Switch","PC",
-    "PlayStation 4","PlayStation 5","PlayStation VR","PlayStation Vita",
-    "Wii U","Xbox One","Xbox Series X/S"
-]
-X = df[categorical + numeric]
-
-# Drop rows with any missing features or missing target
-# .all(axis=1) → all means it collapses rows into a single True if NO NaNs at all, False if at least 1
-# .notna() → returns a DF of True where the cell is not missing (NaN) and False where it is missing.
-valid = df[categorical + numeric + ["ign_score"]].notna().all(axis=1)
-X = df.loc[valid, categorical + numeric].copy()
-y = df.loc[valid, "ign_score"].copy()
-
-# Ensure only numeric features are numeric; leave strings for OneHotEncoder
-X[numeric] = X[numeric].astype(float)
-
-# Create a test / train split syntax:
-RANDOM_STATE = 42 # random integer
-np.random.seed(RANDOM_STATE) # reproducibility: sets NumPy’s random number gen to start in the same state to get same sequence each time
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.10,
-    random_state=RANDOM_STATE,
-    shuffle=True
-)
-# alternative to the above: “predict future from past” setup - split by year instead of random
-
-# --------- TERMS --------
-# Fit = train
-# Variation - deviations from the mean (how far each value is from the average)
-# Median - middle value in a sorted list of numbers. less sensitive to extreme values than the average (mean):
-# [6, 7, 8, 9, 100] → median = 8, mean ≈ 26.
-# So: I set aside 20% of the data that the model did NOT see, so that I can programmatically compare the test data with predictions, and get: 
-# - MAE (Mean Absolute Error) - sum of by how off predictions are, divided by total predictions = by how much the predictions are off on average
-# - RMSE (Root Mean Squared Error) - same, but sums are squared, then square rooted - to make big mistakes more punishable
-# Baseline: I grab all features that you give me. For this particular set of features, the mean is this. Dummy of predictions.
-# R^2 = 1− (Our model’s error​ / Baseline’s error), which means how much better are we than that. Like, did we even achieve anything.
-
-# baseline/dummy = very simple reference model (like predicting the median) used 
-# to check whether your real model is actually learning something useful. 
-# If you can’t beat the baseline, revisit data cleaning or feature choices
-baseline_model = DummyRegressor(strategy="median")
-baseline_model.fit(X_train, y_train)
-baseline_predictions = baseline_model.predict(X_test)
-
-# Models: “Classifier” predicts categories; “Regressor” predicts a number 
-# Here, we make, fit (train) XGBoost "regressor" and make it predict
-our_model = XGBRegressor(random_state=RANDOM_STATE)
-pre = ColumnTransformer([ ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=5), categorical), ("num", "passthrough", numeric) ])
-pipe = make_pipeline(pre, our_model)
-pipe.fit(X_train, y_train)
-our_predictions = pipe.predict(X_test)
-
-# # Compare baseline and real model with MAE, RMSE and R^2
-mae_baseline = mean_absolute_error(y_test, baseline_predictions)
-mae_ours = mean_absolute_error(y_test, our_predictions)
-rmse_baseline = root_mean_squared_error(y_test, baseline_predictions)
-rmse_ours = root_mean_squared_error(y_test, our_predictions)
-r2_ours = r2_score(y_test, our_predictions)
-
-print("Baseline MAE:", mae_baseline)
-print("Model MAE:", mae_ours)
-print("Baseline RMSE:", rmse_baseline)
-print("Model RMSE:", rmse_ours)
-print("Model R²:", r2_ours)
-
-# Ask it to make a prediction
-# Find ids
-print(list(enumerate(creator_encoder.classes_)))
-print(list(enumerate(author_encoder.classes_)))
-# Pretend you want to predict for this game
-new_game = pd.DataFrame([{
-    "creator": "obsidian_entertainment",
-    "author":  "luke_reilly",
-    "year": 2025,
-    "review_lag_days": 30,
-    "title_len": 5,
-    "platform_count": 1,
-    "has_colon": True, "has_num": False, "is_dlc": False,
-    "Google Stadia": 0, "Nintendo 3DS": 0, "Nintendo Switch": 1, "PC": 0,
-    "PlayStation 4": 0, "PlayStation 5": 0, "PlayStation VR": 0, "PlayStation Vita": 0,
-    "Wii U": 0, "Xbox One": 0, "Xbox Series X/S": 0
-}])
-predicted_score = pipe.predict(new_game)
-print("Predicted IGN score:", predicted_score[0])
-
-# ------ 8. Add Features ------ 
+# ------ 5. Function to add genre metadata to all_games ------ 
 # The model with just year of release, developer, writer and platform is not beating the baseline.
 # Reason: IGN review scores mostly live in a tight 6–9 band, a “guess the median” baseline is surprisingly strong.
 # Lesson: Before I do a ML project, I have to BELIEVE/THINK that there is a correlation, not just HOPE there is one.
 # Solution: attach metadata to all_games: genre / steam tags, like I planned
+
+# match names of games from all_games with the steam ids from the list
+# print for how many games a matching steam id was found and for how many it was not found
+import requests
+
+def add_metadata(all_games_list, steam_app_list):
+    # Build lookup dict
+    steam_lookup = {app["name"].strip().lower(): app["appid"] for app in steam_app_list}
+    found, not_found = 0, 0
+
+    for game in all_games_list:
+        title = game["title"].strip().lower()
+        if title in steam_lookup:
+            found += 1
+            game["steam_appid"] = steam_lookup[title]
+        else:
+            not_found += 1
+            game["steam_appid"] = None
+
+    print(f"Matched {found} games, {not_found} not found.")
+    return all_games_list
+
+# --- Usage ---
+steam_ids_url = "https://api.steampowered.com/ISteamApps/GetAppList/v0002/?key=STEAMKEY&format=json"
+steam_list_resp = requests.get(steam_ids_url)
+steam_app_list = steam_list_resp.json()["applist"]["apps"]
+
+# for each of the games that a matching steam id was found, find more details in the steam_details_url 
+# and attach it to all_games under .metadata object
+import time    
+
+def add_steam_metadata(all_games_list, sleep_sec=0.0, timeout=10):
+    """
+    Enrich games that already have 'steam_appid' using Steam appdetails.
+    - Adds game['metadata'] with: genres, categories, release_date, developers, publishers.
+    - Skips games without steam_appid OR if metadata already present.
+    - Caches repeated appid lookups within this call.
+    - sleep_sec: optional delay between calls (set >0 if you want to be gentle).
+    - timeout: requests timeout in seconds.
+    """
+    session = requests.Session()
+    cache = {}  # appid -> metadata dict (or {})
+    found, missing, errors, already = 0, 0, 0, 0
+
+    for game in all_games_list:
+        appid = game.get("steam_appid")
+        if not appid:
+            # No steam match
+            game.setdefault("metadata", {})
+            missing += 1
+            continue
+
+        # ✅ Skip if already has metadata
+        if game.get("metadata"):
+            already += 1
+            continue
+
+        if appid in cache:
+            game["metadata"] = cache[appid]
+            found += 1 if cache[appid] else 0
+            continue
+
+        try:
+            url = f"https://store.steampowered.com/api/appdetails?appids={appid}"
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # appdetails returns { "<appid>": {"success": bool, "data": {...}} }
+            node = data.get(str(appid), {})
+            if node.get("success") and isinstance(node.get("data"), dict):
+                d = node["data"]
+                meta = {
+                    "steam_appid": appid,
+                    "name": d.get("name"),
+                    "release_date": d.get("release_date", {}).get("date"),
+                    "developers": d.get("developers", []),
+                    "publishers": d.get("publishers", []),
+                    "genres": [g.get("description") for g in d.get("genres", []) if isinstance(g, dict)],
+                    "categories": [c.get("description") for c in d.get("categories", []) if isinstance(c, dict)],
+                }
+                cache[appid] = meta
+                game["metadata"] = meta
+                found += 1
+            else:
+                cache[appid] = {}
+                game["metadata"] = {}
+        except Exception as e:
+            errors += 1
+            game["metadata"] = {}
+            # Optional: print(f"[ERROR] appid {appid}: {e}")
+
+        if sleep_sec:
+            time.sleep(sleep_sec)
+
+    print(f"Steam metadata: {found} enriched, {missing} without appid, {already} already had metadata, {errors} errors.")
+    return all_games_list
+
+all_games = add_metadata(all_games, steam_app_list)
+all_games = add_steam_metadata(all_games) 
+save_cache(all_games)
+
+# ================================================================
+# PREP FEATURES + METADATA + TIME SPLIT + EARLY-STOP XGB TRAIN
+# ================================================================
+import re
+import numpy as np
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
+from xgboost import XGBRegressor
+
+# ---------- A) Title clues (fix warnings, handle NA) ----------
+t = df["title"].fillna("")
+df["has_colon"] = t.str.contains(":", na=False)
+# non-capturing groups; case-insensitive; handle NA explicitly
+df["has_num"] = t.str.contains(r'\b(?:\d+|i{1,3}|iv|v|vi{0,3}|ix|x)\b', case=False, regex=True, na=False)
+df["is_dlc"]  = t.str.contains(r'\b(?:dlc|expansion|episode|chapter|pack|remaster|definitive)\b',
+                               case=False, regex=True, na=False)
+
+# review lag (clip to reasonable range to dampen outliers)
+df["review_lag_days"] = (df["date"] - df["release_date"]).dt.days
+df["review_lag_days"] = df["review_lag_days"].clip(lower=-365, upper=365)
+df["title_len"] = t.str.len().fillna(0)
+
+# ---------- B) Platform one-hots (and ensure expected columns exist) ----------
+df["platform"] = df["platform"].fillna("").str.split(",")
+df["platform"] = df["platform"].apply(lambda xs: [s.strip() for s in xs] if isinstance(xs, list) else [])
+df["platform_count"] = df["platform"].apply(len)
+df = df.join(df["platform"].str.join('|').str.get_dummies())
+
+expected_platforms = [
+    "Google Stadia","Nintendo 3DS","Nintendo Switch","PC",
+    "PlayStation 4","PlayStation 5","PlayStation VR","PlayStation Vita",
+    "Wii U","Xbox One","Xbox Series X/S"
+]
+for col in expected_platforms:
+    if col not in df.columns:
+        df[col] = 0
+
+# ---------- C) Steam metadata -> genre/category dummies ----------
+def safe_list(x): return x if isinstance(x, list) else []
+
+meta_rows = []
+for g in all_games:
+    md = g.get("metadata", {}) or {}
+    meta_rows.append({
+        "title": g.get("title", ""),
+        "steam_appid": g.get("steam_appid"),
+        "steam_release_date": md.get("release_date"),
+        "steam_genres": safe_list(md.get("genres")),
+        "steam_categories": safe_list(md.get("categories")),
+    })
+
+meta_df = pd.DataFrame(meta_rows)
+meta_df["title"] = meta_df["title"].astype(str).str.lower().str.replace(' ', '_', regex=False)
+meta_df["steam_release_date"] = pd.to_datetime(meta_df["steam_release_date"], errors="coerce")
+
+def list_to_pipe(series):
+    return series.apply(lambda lst: "|".join(lst) if isinstance(lst, list) and len(lst) else "")
+
+genre_dummies = list_to_pipe(meta_df["steam_genres"]).str.get_dummies(sep="|")
+cat_dummies   = list_to_pipe(meta_df["steam_categories"]).str.get_dummies(sep="|")
+
+TOP_N_GENRES, TOP_N_CATS = 30, 30
+if genre_dummies.shape[1] > TOP_N_GENRES:
+    top_genres = genre_dummies.sum().sort_values(ascending=False).head(TOP_N_GENRES).index
+    genre_dummies = genre_dummies[top_genres]
+if cat_dummies.shape[1] > TOP_N_CATS:
+    top_cats = cat_dummies.sum().sort_values(ascending=False).head(TOP_N_CATS).index
+    cat_dummies = cat_dummies[top_cats]
+
+genre_dummies = genre_dummies.add_prefix("g__")
+cat_dummies   = cat_dummies.add_prefix("c__")
+
+meta_df = pd.concat([meta_df[["title","steam_appid","steam_release_date"]],
+                     genre_dummies, cat_dummies], axis=1)
+
+# merge & backfill release_date, recompute year + lag
+df = df.merge(meta_df, on="title", how="left")
+df["release_date"] = df["release_date"].fillna(df["steam_release_date"])
+df["year"] = df["release_date"].dt.year
+df["review_lag_days"] = (df["date"] - df["release_date"]).dt.days.clip(-365, 365)
+
+genre_cols = [c for c in df.columns if c.startswith("g__")]
+cat_cols   = [c for c in df.columns if c.startswith("c__")]
+df[genre_cols + cat_cols] = df[genre_cols + cat_cols].fillna(0).astype(float)
+
+# ---------- D) Build ML matrix ----------
+categorical = ["creator", "author"]
+numeric = [
+    "year","has_colon","has_num","is_dlc","review_lag_days",
+    "platform_count","title_len",
+    *expected_platforms, *genre_cols, *cat_cols
+]
+
+# Keep only rows with complete features + target
+valid = df[categorical + numeric + ["ign_score"]].notna().all(axis=1)
+X = df.loc[valid, categorical + numeric].copy()
+y = df.loc[valid, "ign_score"].astype(float).copy()
+X[numeric] = X[numeric].astype(float)
+
+# ---------- E) Time-based split (hold out newest ~10%) ----------
+# Sort by review date so we test on future reviews
+ordered_idx = X.assign(_d=df.loc[valid, "date"]).sort_values("_d").index
+cut = int(len(ordered_idx) * 0.90)
+train_idx, test_idx = ordered_idx[:cut], ordered_idx[cut:]
+
+X_train_raw, X_test_raw = X.loc[train_idx], X.loc[test_idx]
+y_train, y_test = y.loc[train_idx], y.loc[test_idx]
+
+# Preprocessor outside Pipeline so we can pass eval_set to XGB
+pre = ColumnTransformer([
+    ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=5), categorical),
+    ("num", "passthrough", numeric)
+])
+
+X_train = pre.fit_transform(X_train_raw)
+X_test  = pre.transform(X_test_raw)
+
+# ---------- F) XGBoost (version-safe early stopping)----------
+import xgboost as xgb
+import numpy as np
+
+# Preprocess outside the model so we can pass eval_set arrays
+pre = ColumnTransformer([
+    ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=5), categorical),
+    ("num", "passthrough", numeric)
+])
+
+X_train = pre.fit_transform(X_train_raw)
+X_test  = pre.transform(X_test_raw)
+
+# sklearn 1.4+ has root_mean_squared_error; provide a fallback for older versions
+try:
+    from sklearn.metrics import root_mean_squared_error as _rmse
+    def RMSE(y_true, y_pred): return _rmse(y_true, y_pred)
+except Exception:
+    from sklearn.metrics import mean_squared_error
+    def RMSE(y_true, y_pred): return mean_squared_error(y_true, y_pred, squared=False)
+
+def fit_xgb_version_safe(Xtr, ytr, Xva, yva, es_rounds=100, eval_metric="rmse"):
+    """
+    Prefer new API (constructor args), fall back to old API (fit kwargs), then callbacks.
+    """
+    # 1) New API (>=2.1): pass early_stopping_rounds/eval_metric/callbacks in constructor
+    try:
+        model = xgb.XGBRegressor(
+            n_estimators=4000,
+            learning_rate=0.03,
+            max_depth=6,
+            min_child_weight=3,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_lambda=2.0,
+            reg_alpha=0.0,
+            random_state=42,
+            n_jobs=-1,
+            objective="reg:squarederror",
+            early_stopping_rounds=es_rounds,
+            eval_metric=eval_metric
+        )
+        model.fit(Xtr, ytr, eval_set=[(Xva, yva)])  # <- ONLY eval_set here
+        return model
+    except TypeError:
+        pass
+
+    # 2) Old API (<2.1): pass early_stopping_rounds/eval_metric to fit()
+    try:
+        model = xgb.XGBRegressor(
+            n_estimators=4000,
+            learning_rate=0.03,
+            max_depth=6,
+            min_child_weight=3,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_lambda=2.0,
+            reg_alpha=0.0,
+            random_state=42,
+            n_jobs=-1,
+            objective="reg:squarederror",
+        )
+        model.fit(
+            Xtr, ytr,
+            eval_set=[(Xva, yva)],
+            early_stopping_rounds=es_rounds,
+            eval_metric=eval_metric
+        )
+        return model
+    except TypeError:
+        pass
+
+    # 3) Very old variants: use callbacks (location changed over time)
+    try:
+        from xgboost import callback as xgb_callback
+        early_stop = xgb_callback.EarlyStopping(rounds=es_rounds, save_best=True)
+        model = xgb.XGBRegressor(
+            n_estimators=4000,
+            learning_rate=0.03,
+            max_depth=6,
+            min_child_weight=3,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_lambda=2.0,
+            reg_alpha=0.0,
+            random_state=42,
+            n_jobs=-1,
+            objective="reg:squarederror",
+            callbacks=[early_stop]
+        )
+        model.fit(Xtr, ytr, eval_set=[(Xva, yva)])
+        return model
+    except Exception as e:
+        raise e  # surface the real error if we got here
+
+# Train (time-based split already built above)
+model = fit_xgb_version_safe(X_train, y_train, X_test, y_test, es_rounds=100, eval_metric="rmse")
+
+# Evaluate vs a median baseline
+y_pred = model.predict(X_test)
+y_base = np.full_like(y_test, np.median(y_train), dtype=float)
+
+from sklearn.metrics import mean_absolute_error, r2_score
+print(f"Test MAE – Baseline: {mean_absolute_error(y_test, y_base):.3f}")
+print(f"Test MAE – XGB     : {mean_absolute_error(y_test, y_pred):.3f}")
+print(f"Test RMSE – Baseline: {RMSE(y_test, y_base):.3f}")
+print(f"Test RMSE – XGB     : {RMSE(y_test, y_pred):.3f}")
+print(f"Test R² – XGB       : {r2_score(y_test, y_pred):.3f}")
+
+# Optional: top importances with feature names
+try:
+    cat_names = pre.named_transformers_["cat"].get_feature_names_out(categorical)
+    num_names = np.array(numeric)
+    feat_names = np.concatenate([cat_names, num_names])
+    importances = getattr(model, "feature_importances_", None)
+    if importances is not None:
+        top = sorted(zip(feat_names, importances), key=lambda x: x[1], reverse=True)[:25]
+        print("\nTop features:")
+        for name, val in top:
+            print(f"{name:35s} {val:.4f}")
+except Exception:
+    pass
