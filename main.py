@@ -362,9 +362,9 @@ def add_steam_metadata(all_games_list, sleep_sec=0.0, timeout=10):
     print(f"Steam metadata: {found} enriched, {missing} without appid, {already} already had metadata, {errors} errors.")
     return all_games_list
 
-all_games = add_metadata(all_games, steam_app_list)
-all_games = add_steam_metadata(all_games) 
-save_cache(all_games)
+# all_games = add_metadata(all_games, steam_app_list)
+# all_games = add_steam_metadata(all_games) 
+# save_cache(all_games)
 
 # ================================================================
 # PREP FEATURES + METADATA + TIME SPLIT + EARLY-STOP XGB TRAIN
