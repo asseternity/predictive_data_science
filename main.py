@@ -367,11 +367,53 @@ def add_steam_metadata(all_games_list, sleep_sec=0.0, timeout=10):
 # save_cache(all_games)
 
 # ================================================================
+# TERMS
+# ================================================================
+
+# Fit = train
+
+# Variation - deviations from the mean (how far each value is from the average)
+
+# Median - middle value in a sorted list of numbers. less sensitive to extreme values than the average (mean):
+# [6, 7, 8, 9, 100] → median = 8, mean ≈ 26.
+# So: I set aside 20% of the data that the model did NOT see, so that I can programmatically compare 
+# the test data with predictions, and get: 
+
+# - MAE (Mean Absolute Error) - sum of by how off predictions are, divided by total predictions = by how much the predictions 
+# are off on average
+
+# - RMSE (Root Mean Squared Error) - same, but sums are squared, then square rooted - to make big mistakes more punishable
+
+# Baseline: I grab all features that you give me. For this particular set of features, the mean is this. Dummy of predictions.
+
+# R^2 = 1− (Our model’s error​ / Baseline’s error), which means how much better are we than that. 
+# Like, did we even achieve anything.
+
+# baseline= very simple reference model (like predicting the median) used 
+# One-hot / dummy variables — Turn a categorical value into 0/1 columns (one column per category)
+
+# ================================================================
+# SYNTAX
+# ================================================================
+
+# df["col"]
+# df.loc[rows, cols]
+# .clip(lower=a, upper=b)
+# .str.len()
+# .apply(func) — Apply func elementwise over a Series (each cell gets passed to func).
+# df.fillna(x) — Replace missing values with x.
+# df.astype(type) — Cast column(s) to a new dtype (e.g., float).
+# df.assign(newcol=...) — Returns a new DataFrame with an added/overwritten column (does not modify in place).
+# List comprehension — [c for c in df.columns if c.startswith("g__")] filters column names by a rule.
+
+# ================================================================
 # PREP FEATURES + METADATA + TIME SPLIT + EARLY-STOP XGB TRAIN
 # ================================================================
+# SYNTAX: `import` brings modules into scope so you can reference their names.
 import re
 import numpy as np
 import pandas as pd
+# SYNTAX: from pkg import Name imports specific symbols into the current namespace.
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
@@ -379,38 +421,76 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_sco
 from xgboost import XGBRegressor
 
 # ---------- A) Title clues (fix warnings, handle NA) ----------
+# SYNTAX: In pandas, a “DataFrame” (df) is a 2D table; a “Series” is a 1D column.
+#         Access a column by key: df["title"] returns a Series.
+#         .fillna(x) replaces missing values (NaN/NaT) with x.
 t = df["title"].fillna("")
+
+# SYNTAX: Creating a new column: df["has_colon"] = <Series-like>.
+#         .str is the pandas string accessor for vectorized string ops on a Series.
+#         .str.contains(pattern, ...) returns booleans where pattern matches.
+#         na=False treats missing values as False instead of propagating NaN.
 df["has_colon"] = t.str.contains(":", na=False)
-# non-capturing groups; case-insensitive; handle NA explicitly
-df["has_num"] = t.str.contains(r'\b(?:\d+|i{1,3}|iv|v|vi{0,3}|ix|x)\b', case=False, regex=True, na=False)
+
+# SYNTAX: r"..." is a raw string; backslashes are not treated as escapes.
+#         Regex: \b=word boundary; (?:...)=non-capturing group; | = OR.
+#         case=False makes the match case-insensitive. regex=True uses regex mode.
+df["has_num"] = t.str.contains(r'\b(?:\d+|i{1,3}|iv|v|vi{0,3}|ix|x)\b',
+                               case=False, regex=True, na=False)
+
+# SYNTAX: Same .str.contains idea; pattern lists alternatives in a non-capturing group.
 df["is_dlc"]  = t.str.contains(r'\b(?:dlc|expansion|episode|chapter|pack|remaster|definitive)\b',
                                case=False, regex=True, na=False)
 
-# review lag (clip to reasonable range to dampen outliers)
+# SYNTAX: .dt is the datetime accessor on Series of dtype datetime64.
+#         Subtracting two datetime Series yields a Timedelta; .dt.days extracts ints.
 df["review_lag_days"] = (df["date"] - df["release_date"]).dt.days
+# SYNTAX: .clip(lower=a, upper=b) limits values to [a, b].
 df["review_lag_days"] = df["review_lag_days"].clip(lower=-365, upper=365)
+
+# SYNTAX: .str.len gives string lengths per row; result is numeric.
 df["title_len"] = t.str.len().fillna(0)
 
 # ---------- B) Platform one-hots (and ensure expected columns exist) ----------
+# SYNTAX: .str.split(",") splits each string into a Python list; results in dtype=object.
 df["platform"] = df["platform"].fillna("").str.split(",")
+
+# SYNTAX: .apply(func) calls func on each element of the Series (row-wise for a column).
+#         Lambda here trims whitespace from each list element.
 df["platform"] = df["platform"].apply(lambda xs: [s.strip() for s in xs] if isinstance(xs, list) else [])
+
+# SYNTAX: Applying len to each list gives per-row counts.
 df["platform_count"] = df["platform"].apply(len)
+
+# SYNTAX: .str.join('|') joins each row's list into a single string "a|b|c".
+#         .str.get_dummies(sep="|") creates **dummy/indicator variables**:
+#         one new column per unique token; 1 if present in the row, 0 otherwise.
+#         This is **one-hot encoding** for multi-label strings.
+# SYNTAX: df.join(other_df) aligns on index and adds other_df's columns to df.
 df = df.join(df["platform"].str.join('|').str.get_dummies())
 
+# SYNTAX: A "one-hot" or "dummy" column is a binary 0/1 indicator column used to
+#         numerically represent categories. A set of k categories becomes k columns.
+
+# SYNTAX: Define a Python list of expected columns so model inputs are consistent.
 expected_platforms = [
     "Google Stadia","Nintendo 3DS","Nintendo Switch","PC",
     "PlayStation 4","PlayStation 5","PlayStation VR","PlayStation Vita",
     "Wii U","Xbox One","Xbox Series X/S"
 ]
+# SYNTAX: If a column doesn't exist, create it with zeros (keeps feature schema fixed).
 for col in expected_platforms:
     if col not in df.columns:
         df[col] = 0
 
 # ---------- C) Steam metadata -> genre/category dummies ----------
+# SYNTAX: def name(args): ... defines a function. Return value is implicit from `return`.
 def safe_list(x): return x if isinstance(x, list) else []
 
+# SYNTAX: Building a list of dicts, then DataFrame(...) turns rows of dicts into a table.
 meta_rows = []
 for g in all_games:
+    # SYNTAX: dict.get(key, default) fetches a value or returns default if missing.
     md = g.get("metadata", {}) or {}
     meta_rows.append({
         "title": g.get("title", ""),
@@ -421,15 +501,24 @@ for g in all_games:
     })
 
 meta_df = pd.DataFrame(meta_rows)
+
+# SYNTAX: .astype(str) casts dtype; chain .str ops.
+#         .str.lower() lowercases; .str.replace(old, new, regex=False) literal replace.
 meta_df["title"] = meta_df["title"].astype(str).str.lower().str.replace(' ', '_', regex=False)
+
+# SYNTAX: pd.to_datetime(..., errors="coerce") parses strings; bad parse -> NaT (missing).
 meta_df["steam_release_date"] = pd.to_datetime(meta_df["steam_release_date"], errors="coerce")
 
+# SYNTAX: Helper that turns list values into a single pipe-separated string per row.
 def list_to_pipe(series):
     return series.apply(lambda lst: "|".join(lst) if isinstance(lst, list) and len(lst) else "")
 
+# SYNTAX: .str.get_dummies expands pipe-separated values into dummy columns.
 genre_dummies = list_to_pipe(meta_df["steam_genres"]).str.get_dummies(sep="|")
 cat_dummies   = list_to_pipe(meta_df["steam_categories"]).str.get_dummies(sep="|")
 
+# SYNTAX: .shape[1] is number of columns; .sum() here sums 1/0 down rows = column frequencies.
+#         .sort_values(ascending=False).head(N).index picks top-N column names.
 TOP_N_GENRES, TOP_N_CATS = 30, 30
 if genre_dummies.shape[1] > TOP_N_GENRES:
     top_genres = genre_dummies.sum().sort_values(ascending=False).head(TOP_N_GENRES).index
@@ -438,51 +527,83 @@ if cat_dummies.shape[1] > TOP_N_CATS:
     top_cats = cat_dummies.sum().sort_values(ascending=False).head(TOP_N_CATS).index
     cat_dummies = cat_dummies[top_cats]
 
+# SYNTAX: .add_prefix("g__") prepends a string to every column name.
 genre_dummies = genre_dummies.add_prefix("g__")
 cat_dummies   = cat_dummies.add_prefix("c__")
 
+# SYNTAX: pd.concat([...], axis=1) concatenates dataframes column-wise.
 meta_df = pd.concat([meta_df[["title","steam_appid","steam_release_date"]],
                      genre_dummies, cat_dummies], axis=1)
 
-# merge & backfill release_date, recompute year + lag
+# SYNTAX: df.merge(right, on="col", how="left") SQL-style join; keeps all left rows.
 df = df.merge(meta_df, on="title", how="left")
+
+# SYNTAX: .fillna(other_series) fills missing with aligned values from another Series.
 df["release_date"] = df["release_date"].fillna(df["steam_release_date"])
+
+# SYNTAX: .dt.year extracts the calendar year as integers.
 df["year"] = df["release_date"].dt.year
+
+# SYNTAX: Recomputing with same .dt days, then .clip as before.
 df["review_lag_days"] = (df["date"] - df["release_date"]).dt.days.clip(-365, 365)
 
+# SYNTAX: List comprehension over column names; .startswith("g__") filters by prefix.
 genre_cols = [c for c in df.columns if c.startswith("g__")]
 cat_cols   = [c for c in df.columns if c.startswith("c__")]
+
+# SYNTAX: Selecting multiple columns: df[cols].fillna(0).astype(float) applies ops vectorized.
 df[genre_cols + cat_cols] = df[genre_cols + cat_cols].fillna(0).astype(float)
 
 # ---------- D) Build ML matrix ----------
+# SYNTAX: “categorical” vs “numeric”: Categorical features are discrete labels that need
+#         encoding; numeric are numbers you can pass directly to models.
 categorical = ["creator", "author"]
+
+# SYNTAX: *list unpacking inserts elements of lists into another list literal.
 numeric = [
     "year","has_colon","has_num","is_dlc","review_lag_days",
     "platform_count","title_len",
     *expected_platforms, *genre_cols, *cat_cols
 ]
 
-# Keep only rows with complete features + target
+# SYNTAX: .notna() gives boolean mask of non-missing values per cell;
+#         .all(axis=1) requires all columns in the row to be non-missing.
 valid = df[categorical + numeric + ["ign_score"]].notna().all(axis=1)
+
+# SYNTAX: df.loc[rows, cols] is label-based selection.
+#         Here we filter rows by boolean mask and pick feature columns.
 X = df.loc[valid, categorical + numeric].copy()
 y = df.loc[valid, "ign_score"].astype(float).copy()
+
+# SYNTAX: .astype(float) converts dtypes; useful before model ingestion.
 X[numeric] = X[numeric].astype(float)
 
 # ---------- E) Time-based split (hold out newest ~10%) ----------
-# Sort by review date so we test on future reviews
+# SYNTAX: .assign(newcol=...) returns a new DataFrame with an added/overwritten column,
+#         without modifying X in place. We add temporary column "_d" for sorting.
 ordered_idx = X.assign(_d=df.loc[valid, "date"]).sort_values("_d").index
+
+# SYNTAX: int(len(...) * 0.90) computes position of 90% split point.
 cut = int(len(ordered_idx) * 0.90)
 train_idx, test_idx = ordered_idx[:cut], ordered_idx[cut:]
 
+# SYNTAX: Indexing by index arrays returns corresponding subsets.
 X_train_raw, X_test_raw = X.loc[train_idx], X.loc[test_idx]
 y_train, y_test = y.loc[train_idx], y.loc[test_idx]
 
-# Preprocessor outside Pipeline so we can pass eval_set to XGB
+# SYNTAX: ColumnTransformer lets you apply different preprocessing to different
+#         column subsets in one object. Each tuple is (name, transformer, columns).
+#         OneHotEncoder turns categorical labels into sparse one-hot columns.
+#         handle_unknown="ignore" avoids errors on unseen categories at transform time.
+#         min_frequency=5 groups rare categories into an “other” bucket.
+#         "passthrough" leaves those columns unchanged.
 pre = ColumnTransformer([
     ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=5), categorical),
     ("num", "passthrough", numeric)
 ])
 
+# SYNTAX: .fit_transform(X) = learn parameters (fit) + apply transformation (transform).
+#         .transform(X) applies learned mappings to new data (no re-fitting).
 X_train = pre.fit_transform(X_train_raw)
 X_test  = pre.transform(X_test_raw)
 
@@ -490,16 +611,17 @@ X_test  = pre.transform(X_test_raw)
 import xgboost as xgb
 import numpy as np
 
-# Preprocess outside the model so we can pass eval_set arrays
+# (Recreate preprocessor — same syntax as above; shows independent instance.)
 pre = ColumnTransformer([
     ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=5), categorical),
     ("num", "passthrough", numeric)
 ])
-
 X_train = pre.fit_transform(X_train_raw)
 X_test  = pre.transform(X_test_raw)
 
-# sklearn 1.4+ has root_mean_squared_error; provide a fallback for older versions
+# SYNTAX: try/except provides a fallback path if import/name not available.
+#         Here we alias root_mean_squared_error to RMSE with a fallback to
+#         mean_squared_error(squared=False) on older sklearn.
 try:
     from sklearn.metrics import root_mean_squared_error as _rmse
     def RMSE(y_true, y_pred): return _rmse(y_true, y_pred)
@@ -507,11 +629,24 @@ except Exception:
     from sklearn.metrics import mean_squared_error
     def RMSE(y_true, y_pred): return mean_squared_error(y_true, y_pred, squared=False)
 
+# SYNTAX: def fit_xgb_version_safe(...): defines a helper function.
+#         Docstring """...""" documents the function.
 def fit_xgb_version_safe(Xtr, ytr, Xva, yva, es_rounds=100, eval_metric="rmse"):
     """
     Prefer new API (constructor args), fall back to old API (fit kwargs), then callbacks.
     """
-    # 1) New API (>=2.1): pass early_stopping_rounds/eval_metric/callbacks in constructor
+    # SYNTAX: XGBRegressor(...) constructs a gradient-boosted trees regressor.
+    #         Common args:
+    #         - n_estimators: number of boosting rounds/trees
+    #         - learning_rate: shrinkage per tree
+    #         - max_depth, min_child_weight, subsample, colsample_bytree: tree/row/col controls
+    #         - reg_lambda/reg_alpha: L2/L1 regularization
+    #         - random_state: RNG seed; n_jobs: parallelism
+    #         - objective="reg:squarederror": regression loss
+    #         Early stopping:
+    #         - early_stopping_rounds: stop if eval metric doesn't improve
+    #         - eval_metric: which metric to monitor
+    #         - eval_set=[(X_val, y_val)]: data on which to monitor performance
     try:
         model = xgb.XGBRegressor(
             n_estimators=4000,
@@ -528,82 +663,49 @@ def fit_xgb_version_safe(Xtr, ytr, Xva, yva, es_rounds=100, eval_metric="rmse"):
             early_stopping_rounds=es_rounds,
             eval_metric=eval_metric
         )
+        # SYNTAX: .fit(X, y, eval_set=[...]) trains the model; eval_set enables early stopping.
         model.fit(Xtr, ytr, eval_set=[(Xva, yva)])  # <- ONLY eval_set here
         return model
     except TypeError:
         pass
 
-    # 2) Old API (<2.1): pass early_stopping_rounds/eval_metric to fit()
-    try:
-        model = xgb.XGBRegressor(
-            n_estimators=4000,
-            learning_rate=0.03,
-            max_depth=6,
-            min_child_weight=3,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_lambda=2.0,
-            reg_alpha=0.0,
-            random_state=42,
-            n_jobs=-1,
-            objective="reg:squarederror",
-        )
-        model.fit(
-            Xtr, ytr,
-            eval_set=[(Xva, yva)],
-            early_stopping_rounds=es_rounds,
-            eval_metric=eval_metric
-        )
-        return model
-    except TypeError:
-        pass
-
-    # 3) Very old variants: use callbacks (location changed over time)
-    try:
-        from xgboost import callback as xgb_callback
-        early_stop = xgb_callback.EarlyStopping(rounds=es_rounds, save_best=True)
-        model = xgb.XGBRegressor(
-            n_estimators=4000,
-            learning_rate=0.03,
-            max_depth=6,
-            min_child_weight=3,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_lambda=2.0,
-            reg_alpha=0.0,
-            random_state=42,
-            n_jobs=-1,
-            objective="reg:squarederror",
-            callbacks=[early_stop]
-        )
-        model.fit(Xtr, ytr, eval_set=[(Xva, yva)])
-        return model
-    except Exception as e:
-        raise e  # surface the real error if we got here
-
-# Train (time-based split already built above)
+# SYNTAX: Call the helper to get a trained model.
 model = fit_xgb_version_safe(X_train, y_train, X_test, y_test, es_rounds=100, eval_metric="rmse")
 
 # Evaluate vs a median baseline
+# SYNTAX: .predict(X) runs the model to get numeric predictions.
 y_pred = model.predict(X_test)
+
+# SYNTAX: np.full_like(y_test, value, dtype=...) makes an array same shape as y_test,
+#         filled with a constant — here the training median, a simple baseline.
 y_base = np.full_like(y_test, np.median(y_train), dtype=float)
 
+# SYNTAX: Metrics — MAE = mean absolute error; RMSE = root mean squared error;
+#         R^2 = coefficient of determination (1 is perfect, can be negative).
 from sklearn.metrics import mean_absolute_error, r2_score
 print(f"Test MAE – Baseline: {mean_absolute_error(y_test, y_base):.3f}")
 print(f"Test MAE – XGB     : {mean_absolute_error(y_test, y_pred):.3f}")
 print(f"Test RMSE – Baseline: {RMSE(y_test, y_base):.3f}")
 print(f"Test RMSE – XGB     : {RMSE(y_test, y_pred):.3f}")
+# SYNTAX: f-strings evaluate expressions inside {...} and format with .3f decimals.
 print(f"Test R² – XGB       : {r2_score(y_test, y_pred):.3f}")
 
 # Optional: top importances with feature names
 try:
+    # SYNTAX: Named transformer retrieval: pre.named_transformers_["cat"].
+    #         .get_feature_names_out(categorical) returns output column names after OHE.
     cat_names = pre.named_transformers_["cat"].get_feature_names_out(categorical)
     num_names = np.array(numeric)
+    # SYNTAX: np.concatenate joins arrays end-to-end.
     feat_names = np.concatenate([cat_names, num_names])
+
+    # SYNTAX: getattr(obj, "attr", default) safely accesses attribute if present.
     importances = getattr(model, "feature_importances_", None)
     if importances is not None:
+        # SYNTAX: zip pairs names with values; sorted(..., key=..., reverse=True) sorts.
         top = sorted(zip(feat_names, importances), key=lambda x: x[1], reverse=True)[:25]
         print("\nTop features:")
+        # SYNTAX: f-string width specifier {name:35s} pads/truncates to 35 chars.
         for name, val in top:
             print(f"{name:35s} {val:.4f}")
 except Exception:
