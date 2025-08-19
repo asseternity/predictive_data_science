@@ -431,14 +431,8 @@ t = df["title"].fillna("")
 #         .str.contains(pattern, ...) returns booleans where pattern matches.
 #         na=False treats missing values as False instead of propagating NaN.
 df["has_colon"] = t.str.contains(":", na=False)
-
-# SYNTAX: r"..." is a raw string; backslashes are not treated as escapes.
-#         Regex: \b=word boundary; (?:...)=non-capturing group; | = OR.
-#         case=False makes the match case-insensitive. regex=True uses regex mode.
 df["has_num"] = t.str.contains(r'\b(?:\d+|i{1,3}|iv|v|vi{0,3}|ix|x)\b',
                                case=False, regex=True, na=False)
-
-# SYNTAX: Same .str.contains idea; pattern lists alternatives in a non-capturing group.
 df["is_dlc"]  = t.str.contains(r'\b(?:dlc|expansion|episode|chapter|pack|remaster|definitive)\b',
                                case=False, regex=True, na=False)
 
