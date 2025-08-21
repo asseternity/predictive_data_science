@@ -14,8 +14,8 @@
 # - in terms of name, genre, platform - can an LLM predict and generate the "perfect IGN game"?
 
 # ------ 1. Cache the data ------
-import json
 import os
+import json
 
 CACHE_PATH = "reviews_cache.json"
 
@@ -50,6 +50,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
+os.environ["CHROME_LOG_FILE"] = os.devnull 
 
 options = Options()
 options.add_argument("--headless") # run in background
@@ -485,6 +486,8 @@ def add_steam_metadata(all_games_list, sleep_sec=0.0, timeout=10):
 # df.assign(newcol=...) — Returns a new DataFrame with an added/overwritten column (does not modify in place).
 # List comprehension — [c for c in df.columns if c.startswith("g__")] filters column names by a rule.
 
+driver.quit()
+
 # ================================================================
 # PREP FEATURES + METADATA + TIME SPLIT + EARLY-STOP XGB TRAIN
 # ================================================================
@@ -896,3 +899,13 @@ try:
             print(f"{name:35s} {val:.4f}")
 except Exception:
     pass
+
+from predict_ign_cli import cli_predict
+pred, raw_row = cli_predict(
+    df=df,
+    model=model,
+    pre=pre,
+    genre_cols=genre_cols,
+    cat_cols=["creator","author"],        # same categorical columns you used
+    expected_platforms=expected_platforms # e.g., ["PC","PlayStation 5",...]
+)
