@@ -112,8 +112,12 @@ else:
             print(f"{date} | {author} | {title} | {score}")
 
 # ------ 3. Getting Metadata from OpenCritic Game Pages with Selenium ------
-if not cached:
-    for game in all_games:
+def add_opencritic_metadata(all_games_list):
+    for game in all_games_list:
+        # Skip if metadata is already there
+        if game.get("platform"):  # will be None if the key is missing
+            print(f"Metadata for {game['title']} already exists. Skipping.")
+            continue
         creator = ""
         release_date = None
         platform = ""
@@ -169,8 +173,77 @@ if not cached:
             })
 
     driver.quit()
-    save_cache(all_games)
-    print(f"Scraped {len(all_games)} reviews and metadata")
+    save_cache(all_games_list)
+    print(f"Scraped {len(all_games_list)} reviews and metadata")
+
+# ------ 3.5 Supplement all_games with God is a Geek reviews ------
+def supplement_all_games(all_games_list):
+    completed = 0
+    repeats = 0
+    errors = 0
+
+    for page in range(1, 190): # for now
+        url = f"https://opencritic.com/outlet/111/god-is-a-geek?page={page}"
+        driver.get(url)
+        time.sleep(3) # wait for JS to render
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        # Find each HTML review block
+        review_blocks = soup.find_all("div", class_="review-row")
+        print(f"Found review blocks: {len(review_blocks)}")
+
+        # See the HTML for one block with BeautifulSoup's prettify
+        # print(review_blocks[0].prettify())
+
+        for block in review_blocks:
+            # Author
+            author_el = block.select_one(".author-name a")
+            author = author_el.get_text(strip=True) if author_el else None
+
+            # Score
+            score_el = block.select_one(".score-display .score-number-bold")
+            if not score_el:
+                errors += 1
+                continue
+            score = float(score_el.get_text(strip=True).split("/")[0])
+
+            # Date
+            date_el = block.select_one(".date-block")
+            if date_el:
+                date = datetime.strptime(date_el.get_text(strip=True), "%b %d, %Y").date()
+            else:
+                date = None
+
+            # Title
+            title_el = block.select_one(".score-display a")
+            title = title_el.get_text(strip=True) if title_el else None
+
+            # Skip if the title is already in our array 
+            for game in all_games_list:
+                if game["title"] == title:
+                    repeats += 1
+                    continue
+     
+            # Link
+            link_element = block.find('a', href=re.compile(r'^/game/\d+/'))
+            link = f"https://opencritic.com{link_element['href']}" if link_element else None
+
+            all_games_list.append({
+                "title": title,
+                "ign_score": score,
+                "date": date,
+                "author": author,
+                "link": link,
+            })
+            completed += 1
+            print(f"{date} | {author} | {title} | {score}")
+    print(f"Supplementing done. Completed: {completed} | repeats: {repeats} | errors: {errors}")
+
+# supplement_all_games(all_games)
+# save_cache(all_games)
+# add_opencritic_metadata(all_games)
+# save_cache(all_games)
+
 
 # ------ 4. Clean data ------
 import pandas as pd
