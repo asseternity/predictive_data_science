@@ -900,6 +900,31 @@ try:
 except Exception:
     pass
 
+from perfect_ign_game_generator import generate_perfect_ign_games, SearchConfig
+
+cfg = SearchConfig(
+    top_genres_by_prior=12,
+    top_platforms_by_freq=6,
+    max_platforms_in_combo=2,
+    years_back=8,
+    allow_dlc_titles=True,       # set False to force standalone names
+    optimize_reviewer=False,     # set True to “game” the reviewer
+    seed=1337
+)
+
+top = generate_perfect_ign_games(
+    df=df,
+    model=model,
+    pre=pre,
+    genre_cols=genre_cols,
+    expected_platforms=expected_platforms,
+    cat_cols=[c for c in df.columns if c.startswith("c__")],  # steam categories
+    k=20,
+    cfg=cfg
+)
+
+print(top)
+
 from predict_ign_cli import cli_predict
 pred, raw_row = cli_predict(
     df=df,
