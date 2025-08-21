@@ -646,11 +646,102 @@ df[genre_cols + cat_cols] = df[genre_cols + cat_cols].fillna(0).astype(float)
 #         encoding; numeric are numbers you can pass directly to models.
 categorical = ["creator", "author"]
 
+# make the features in the df itself
+# --- 0) Sort once to guarantee temporal order (stable within same day) ---
+df = df.sort_values(["date", "title"]).reset_index(drop=True)
+
+global_mean = float(df["ign_score"].mean())
+
+# --- 1) Single-label encoders (author, creator) using past-only expanding means ---
+def past_mean_single(df, key, target="ign_score", out_col=None, m=5.0):
+    """
+    past-only mean for a single-label key (author/creator).
+    Smoothed with global mean via m (strength).
+    """
+    if out_col is None: out_col = f"{key}_avg"
+    grp = df.groupby(key, sort=False)[target]
+    past_sum = grp.cumsum() - df[target]          # sum of previous rows for this key
+    past_cnt = grp.cumcount()                     # count of previous rows for this key
+    raw = np.where(past_cnt > 0, past_sum / past_cnt, np.nan)
+
+    # James–Stein style smoothing toward the global mean
+    smoothed = ((past_cnt * raw) + (m * global_mean)) / (past_cnt + m)
+    df[out_col] = np.where(np.isnan(raw), np.nan, smoothed)
+    return df
+
+df = past_mean_single(df, "author",  out_col="author_avg",  m=5.0)
+df = past_mean_single(df, "creator", out_col="creator_avg", m=5.0)
+
+# Fill cold-start after we compute all encoders, right before modeling:
+# df["author_avg"]  = df["author_avg"].fillna(global_mean)
+# df["creator_avg"] = df["creator_avg"].fillna(global_mean)
+
+# --- 2) Multi-label PLATFORM (list per row) → explode, past-only mean per platform, aggregate back ---
+# Keep original row index so we can aggregate back after explode
+idx_name = "_row_id"
+df[idx_name] = df.index
+
+tmp = df[[idx_name, "date", "platform", "ign_score"]].explode("platform").copy()
+tmp["platform"] = tmp["platform"].fillna("Unknown").astype(str)
+tmp = tmp.sort_values(["platform", "date", idx_name])
+
+g = tmp.groupby("platform", sort=False)["ign_score"]
+tmp["past_sum"] = g.cumsum() - tmp["ign_score"]
+tmp["past_cnt"] = g.cumcount()
+tmp["platform_avg_tmp_raw"] = np.where(tmp["past_cnt"] > 0,
+                                       tmp["past_sum"] / tmp["past_cnt"], np.nan)
+
+# Smooth toward global mean
+m_plat = 5.0
+tmp["platform_avg_tmp"] = np.where(
+    np.isnan(tmp["platform_avg_tmp_raw"]),
+    np.nan,
+    ((tmp["past_cnt"] * tmp["platform_avg_tmp_raw"]) + (m_plat * global_mean)) / (tmp["past_cnt"] + m_plat)
+)
+
+# Average across the (possibly many) platforms of the same row
+df["platform_avg"] = (
+    tmp.groupby(idx_name, sort=False)["platform_avg_tmp"].mean()
+)
+
+# --- 3) Multi-label GENRE (from your one-hots) → build list, explode, past-only mean per genre, aggregate back ---
+cols = np.array(genre_cols)                             # e.g., ["g__Action", "g__RPG", ...]
+mask = df[genre_cols].to_numpy(dtype=bool)
+df["genres_list"] = [list(cols[m]) for m in mask]
+
+gg = df[[idx_name, "date", "genres_list", "ign_score"]].copy().explode("genres_list")
+gg = gg.rename(columns={"genres_list": "genre"})
+gg["genre"] = gg["genre"].fillna("Unknown").astype(str)
+gg = gg.sort_values(["genre", "date", idx_name])
+
+h = gg.groupby("genre", sort=False)["ign_score"]
+gg["past_sum"] = h.cumsum() - gg["ign_score"]
+gg["past_cnt"] = h.cumcount()
+gg["genre_avg_tmp_raw"] = np.where(gg["past_cnt"] > 0,
+                                   gg["past_sum"] / gg["past_cnt"], np.nan)
+
+# Smooth toward global mean
+m_gen = 5.0
+gg["genre_avg_tmp"] = np.where(
+    np.isnan(gg["genre_avg_tmp_raw"]),
+    np.nan,
+    ((gg["past_cnt"] * gg["genre_avg_tmp_raw"]) + (m_gen * global_mean)) / (gg["past_cnt"] + m_gen)
+)
+
+df["genre_avg"] = gg.groupby(idx_name, sort=False)["genre_avg_tmp"].mean()
+
+# --- 4) Cold-start fallback AFTER building all encoders ---
+df["author_avg"]   = df["author_avg"].fillna(global_mean)
+df["creator_avg"]  = df["creator_avg"].fillna(global_mean)
+df["platform_avg"] = df["platform_avg"].fillna(global_mean)
+df["genre_avg"]    = df["genre_avg"].fillna(global_mean)
+
 #  *list unpacking inserts elements of lists into another list literal.
 numeric = [
     "year","has_colon","has_num","is_dlc","review_lag_days",
     "platform_count","title_len",
-    *expected_platforms, *genre_cols, *cat_cols
+    *expected_platforms, *genre_cols, *cat_cols,
+    "author_avg","creator_avg","platform_avg","genre_avg"
 ]
 
 #  .notna() gives boolean mask of non-missing values per cell;
@@ -675,12 +766,13 @@ ordered_idx = X.assign(_d=df.loc[valid, "date"]).sort_values("_d").index
 
 # first 90% indices for train, last 10% for test.
 #  int(len(...) * 0.90) computes position of 90% split point.
-cut = int(len(ordered_idx) * 0.90)
-train_idx, test_idx = ordered_idx[:cut], ordered_idx[cut:]
+cut_tr = int(len(ordered_idx) * 0.85)
+cut_va = int(len(ordered_idx) * 0.95)
+train_idx, val_idx, test_idx = ordered_idx[:cut_tr], ordered_idx[cut_tr:cut_va], ordered_idx[cut_va:]
 
 #  Indexing by index arrays returns corresponding subsets.
-X_train_raw, X_test_raw = X.loc[train_idx], X.loc[test_idx]
-y_train, y_test = y.loc[train_idx], y.loc[test_idx]
+X_train_raw, X_val_raw, X_test_raw = X.loc[train_idx], X.loc[val_idx], X.loc[test_idx]
+y_train,     y_val,     y_test     = y.loc[train_idx], y.loc[val_idx], y.loc[test_idx]
 
 # Handle preprocessing for creator and author - final non-numeric columns
 # ColumnTransformer allows different preprocessing per column group.
@@ -700,10 +792,11 @@ pre = ColumnTransformer([
 # - .fit() → learns how to transform (e.g., discovers all category levels).
 # - .transform() → actually encodes the rows.
 # Combined: .fit_transform() does both at once.
-X_train = pre.fit_transform(X_train_raw)
 # pre.transform(X_test_raw):
 # - Use the same learned mappings to transform test rows
 #   (no re-fitting, so categories are consistent between train/test).
+X_train = pre.fit_transform(X_train_raw)
+X_val   = pre.transform(X_val_raw)
 X_test  = pre.transform(X_test_raw)
 
 # ---------- F) XGBoost (version-safe early stopping)----------
@@ -740,22 +833,24 @@ def fit_xgb_version_safe(Xtr, ytr, Xva, yva, es_rounds=100, eval_metric="rmse"):
     #         - eval_set=[(X_val, y_val)]: data on which to monitor performance
     try:
         model = xgb.XGBRegressor(
-            n_estimators=4000,
-            learning_rate=0.03,
-            max_depth=6,
-            min_child_weight=3,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_lambda=2.0,
-            reg_alpha=0.0,
+            n_estimators=1500,        # fewer trees
+            learning_rate=0.06,       # a bit higher LR
+            max_depth=4,              # shallower trees
+            min_child_weight=6,       # stricter splits
+            subsample=0.9,            # more rows per tree
+            colsample_bytree=0.65,    # fewer features per tree
+            reg_lambda=4.0,           # stronger L2
+            reg_alpha=1.0,            # some L1
+            base_score=float(np.median(y_train)),  # anchor near baseline
             random_state=42,
             n_jobs=-1,
+            tree_method="hist",
             objective="reg:squarederror",
-            early_stopping_rounds=es_rounds,
-            eval_metric=eval_metric
+            early_stopping_rounds=50,
+            eval_metric="rmse"
         )
         #  .fit(X, y, eval_set=[...]) trains the model; eval_set enables early stopping.
-        model.fit(Xtr, ytr, eval_set=[(Xva, yva)])  # <- ONLY eval_set here
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
         return model
     except TypeError:
         pass
