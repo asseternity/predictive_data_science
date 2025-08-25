@@ -312,7 +312,7 @@ print(avg_by_year)
 ##########################################################
 
 # ------ WHY THE ABOVE WORKS ------
-# 1) You start with df, your full DataFrame — a big table containing all the data.
+# 1) You start with df, the full DataFrame — a big table containing all the data.
 
 # 2) When you do df.groupby("creator"), pandas splits this big table into smaller tables, one for each unique creator. 
 # This returns a GroupBy object — a kind of lazy object that hasn't done calculations yet.
@@ -491,7 +491,6 @@ driver.quit()
 # ================================================================
 # PREP FEATURES + METADATA + TIME SPLIT + EARLY-STOP XGB TRAIN
 # ================================================================
-# `import` brings modules into scope so you can reference their names.
 import re
 import numpy as np
 import pandas as pd
@@ -707,7 +706,7 @@ df["platform_avg"] = (
     tmp.groupby(idx_name, sort=False)["platform_avg_tmp"].mean()
 )
 
-# --- 3) Multi-label GENRE (from your one-hots) → build list, explode, past-only mean per genre, aggregate back ---
+# --- 3) Multi-label GENRE (from one-hots) → build list, explode, past-only mean per genre, aggregate back ---
 cols = np.array(genre_cols)                             # e.g., ["g__Action", "g__RPG", ...]
 mask = df[genre_cols].to_numpy(dtype=bool)
 df["genres_list"] = [list(cols[m]) for m in mask]
@@ -899,31 +898,6 @@ try:
             print(f"{name:35s} {val:.4f}")
 except Exception:
     pass
-
-from perfect_ign_game_generator import generate_perfect_ign_games, SearchConfig
-
-cfg = SearchConfig(
-    top_genres_by_prior=12,
-    top_platforms_by_freq=6,
-    max_platforms_in_combo=2,
-    years_back=8,
-    allow_dlc_titles=True,       # set False to force standalone names
-    optimize_reviewer=False,     # set True to “game” the reviewer
-    seed=1337
-)
-
-top = generate_perfect_ign_games(
-    df=df,
-    model=model,
-    pre=pre,
-    genre_cols=genre_cols,
-    expected_platforms=expected_platforms,
-    cat_cols=[c for c in df.columns if c.startswith("c__")],  # steam categories
-    k=20,
-    cfg=cfg
-)
-
-print(top)
 
 from predict_ign_cli import cli_predict
 pred, raw_row = cli_predict(
