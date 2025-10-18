@@ -36,10 +36,4 @@ End-to-end machine learning project predicting video game review scores from Ope
 - Unit tests for feature builders and validators  
 - Data schema contract tests to prevent drift  
 
-## Artifacts
-- `/notebooks/pipeline.ipynb`  
-- `/data/processed/games.csv`  
-- `/reports/metrics.md`  
-- `/models/xgb_model.json`  
-
 ## Notebook: https://www.kaggle.com/code/assetn/video-game-review-score-predictor
